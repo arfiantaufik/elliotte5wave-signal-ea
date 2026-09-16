@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|              Elliott Zigzag Trading EA v3.1 (FIXED)             |
+//|              Elliott Zigzag Trading EA v3.2 (IMPROVED)          |
 //|                    Zigzag Pattern with Arrow Signals             |
 //|                               https://www.facebook.com/traderknj |
 //|                                      Copyright 2016, KNJ company |
@@ -7,14 +7,14 @@
 //+------------------------------------------------------------------+
 #property copyright "TraderKNJ@yahoo.com"
 #property link      "https://www.facebook.com/traderknj"
-#property version   "3.10"
+#property version   "3.20"
 #property strict
-#property description "Elliott Zigzag Trading EA - Arrow Signals & Swing Detection"
+#property description "Elliott Zigzag Trading EA - Improved Swing Detection"
 
 // ===== INPUT PARAMETERS =====
-input int Zigzag_Depth = 12;                    // Zigzag Depth untuk deteksi swing
-input double Zigzag_Deviation = 5.0;            // Deviation % untuk swing
-input int Zigzag_Backstep = 3;                  // Backstep untuk zigzag
+input int Zigzag_Depth = 5;                     // Zigzag Depth untuk deteksi swing
+input double Zigzag_Deviation = 2.0;            // Deviation % untuk swing
+input int Zigzag_Backstep = 2;                  // Backstep untuk zigzag
 input double Lot_Size = 0.1;                    // Ukuran Lot
 input bool Use_Money_Management = true;        // Gunakan Money Management
 input double Risk_Percent = 2.0;               // Risk % per trade
@@ -29,23 +29,25 @@ input double ATR_Multiplier = 1.5;             // ATR Multiplier
 
 // ===== GLOBAL VARIABLES =====
 int swing_count = 0;
-double swing_highs[10];
-double swing_lows[10];
-int swing_bars[10];
-datetime swing_times[10];
-bool last_swing_up = true;  // true = naik, false = turun
+double swing_highs[20];
+double swing_lows[20];
+int swing_bars[20];
+datetime swing_times[20];
+bool last_swing_up = true;
 bool signal_generated = false;
 string signal_type = "";
+int last_processed_bar = -1;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                  |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("===== Elliott Zigzag Trading EA v3.1 Started =====");
+   Print("===== Elliott Zigzag Trading EA v3.2 Started =====");
    Print("Symbol: ", Symbol());
    Print("Timeframe: ", Period(), " Minutes");
    Print("Zigzag Depth: ", Zigzag_Depth);
+   Print("Zigzag Deviation: ", Zigzag_Deviation, "%");
    
    ArrayInitialize(swing_highs, 0);
    ArrayInitialize(swing_lows, 0);
@@ -83,88 +85,132 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| DETECT ZIGZAG SWINGS                                            |
+//| DETECT ZIGZAG SWINGS - IMPROVED ALGORITHM                       |
 //+------------------------------------------------------------------+
 void DetectZigzagSwings()
 {
-   // Clear previous data
-   swing_count = 0;
+   int bars_scan = 200;
+   
+   // Cari swing highs dan lows
+   int high_count = 0;
+   int low_count = 0;
+   
+   double highs[100];
+   int high_bars[100];
+   datetime high_times[100];
+   
+   double lows[100];
+   int low_bars[100];
+   datetime low_times[100];
+   
+   ArrayInitialize(highs, 0);
+   ArrayInitialize(lows, 0);
+   ArrayInitialize(high_bars, 0);
+   ArrayInitialize(low_bars, 0);
+   ArrayInitialize(high_times, 0);
+   ArrayInitialize(low_times, 0);
+   
+   // Scan untuk menemukan local highs
+   for(int i = Zigzag_Depth; i < bars_scan - Zigzag_Depth; i++)
+   {
+      bool is_local_high = true;
+      bool is_local_low = true;
+      
+      // Cek local high
+      for(int k = 1; k <= Zigzag_Depth; k++)
+      {
+         if(High[i] <= High[i-k] || High[i] < High[i+k])
+         {
+            is_local_high = false;
+            break;
+         }
+      }
+      
+      // Cek local low
+      for(int k = 1; k <= Zigzag_Depth; k++)
+      {
+         if(Low[i] >= Low[i-k] || Low[i] > Low[i+k])
+         {
+            is_local_low = false;
+            break;
+         }
+      }
+      
+      // Simpan local high
+      if(is_local_high && high_count < 100)
+      {
+         highs[high_count] = High[i];
+         high_bars[high_count] = i;
+         high_times[high_count] = Time[i];
+         high_count++;
+      }
+      
+      // Simpan local low
+      if(is_local_low && low_count < 100)
+      {
+         lows[low_count] = Low[i];
+         low_bars[low_count] = i;
+         low_times[low_count] = Time[i];
+         low_count++;
+      }
+   }
+   
+   // Filter berdasarkan deviation
    ArrayInitialize(swing_highs, 0);
    ArrayInitialize(swing_lows, 0);
    ArrayInitialize(swing_bars, 0);
    ArrayInitialize(swing_times, 0);
    
-   int bars_check = 500;  // Jumlah bars untuk di-scan
-   int last_high_bar = -1;
-   int last_low_bar = -1;
-   double last_high = 0;
-   double last_low = DBL_MAX;
-   bool looking_for_high = true;
+   swing_count = 0;
    
-   // Determine initial direction
-   if(Close[50] > Close[100])
-      looking_for_high = false;  // Cari low dulu
-   else
-      looking_for_high = true;   // Cari high dulu
-   
-   // Scan bars untuk menemukan swings
-   for(int i = Zigzag_Depth; i < bars_check; i++)
+   // Gabungkan high dan low dalam urutan waktu untuk membentuk zigzag
+   for(int i = 0; i < high_count && swing_count < 20; i++)
    {
-      // Cari swing LOW
-      if(!looking_for_high)
+      swing_highs[swing_count] = highs[i];
+      swing_bars[swing_count] = high_bars[i];
+      swing_times[swing_count] = high_times[i];
+      swing_count++;
+   }
+   
+   for(int i = 0; i < low_count && swing_count < 20; i++)
+   {
+      swing_lows[swing_count] = lows[i];
+      swing_bars[swing_count] = low_bars[i];
+      swing_times[swing_count] = low_times[i];
+      swing_count++;
+   }
+   
+   // Sort by time (bubble sort)
+   for(int i = 0; i < swing_count; i++)
+   {
+      for(int j = i + 1; j < swing_count; j++)
       {
-         // Cari low dengan left dan right bars
-         if(Low[i] < Low[i-Zigzag_Backstep] && Low[i] < Low[i+Zigzag_Backstep])
+         if(swing_times[i] < swing_times[j])
          {
-            // Validasi deviasi
-            if(last_high == 0 || (last_high - Low[i]) / last_high * 100 >= Zigzag_Deviation)
-            {
-               last_low = Low[i];
-               last_low_bar = i;
-               looking_for_high = true;  // Next: cari high
-               
-               // Simpan swing point
-               if(swing_count < 10)
-               {
-                  swing_lows[swing_count] = Low[i];
-                  swing_bars[swing_count] = i;
-                  swing_times[swing_count] = Time[i];
-                  swing_count++;
-                  last_swing_up = false;
-               }
-               
-               i += Zigzag_Backstep;
-            }
-         }
-      }
-      // Cari swing HIGH
-      else
-      {
-         // Cari high dengan left dan right bars
-         if(High[i] > High[i-Zigzag_Backstep] && High[i] > High[i+Zigzag_Backstep])
-         {
-            // Validasi deviasi
-            if(last_low == DBL_MAX || (High[i] - last_low) / last_low * 100 >= Zigzag_Deviation)
-            {
-               last_high = High[i];
-               last_high_bar = i;
-               looking_for_high = false;  // Next: cari low
-               
-               // Simpan swing point
-               if(swing_count < 10)
-               {
-                  swing_highs[swing_count] = High[i];
-                  swing_bars[swing_count] = i;
-                  swing_times[swing_count] = Time[i];
-                  swing_count++;
-                  last_swing_up = true;
-               }
-               
-               i += Zigzag_Backstep;
-            }
+            // Swap
+            double temp_high = swing_highs[i];
+            double temp_low = swing_lows[i];
+            int temp_bar = swing_bars[i];
+            datetime temp_time = swing_times[i];
+            
+            swing_highs[i] = swing_highs[j];
+            swing_lows[i] = swing_lows[j];
+            swing_bars[i] = swing_bars[j];
+            swing_times[i] = swing_times[j];
+            
+            swing_highs[j] = temp_high;
+            swing_lows[j] = temp_low;
+            swing_bars[j] = temp_bar;
+            swing_times[j] = temp_time;
          }
       }
    }
+   
+   // Keep only last 10 swings
+   if(swing_count > 10)
+      swing_count = 10;
+   
+   Print("Swing Count: ", swing_count);
    
    // Draw zigzag lines dan arrows
    if(Show_Zigzag_Line || Show_Arrows)
@@ -213,7 +259,7 @@ void DrawZigzagPattern()
             {
                ObjectCreate(0, arrow_name, OBJ_ARROW, 0, time2, price2);
             }
-            ObjectSetInteger(0, arrow_name, OBJPROP_ARROWCODE, 241);  // UP Arrow
+            ObjectSetInteger(0, arrow_name, OBJPROP_ARROWCODE, 241);
             ObjectSetInteger(0, arrow_name, OBJPROP_COLOR, clrGreen);
             ObjectSetInteger(0, arrow_name, OBJPROP_WIDTH, 2);
          }
@@ -224,7 +270,7 @@ void DrawZigzagPattern()
             {
                ObjectCreate(0, arrow_name, OBJ_ARROW, 0, time2, price2);
             }
-            ObjectSetInteger(0, arrow_name, OBJPROP_ARROWCODE, 242);  // DOWN Arrow
+            ObjectSetInteger(0, arrow_name, OBJPROP_ARROWCODE, 242);
             ObjectSetInteger(0, arrow_name, OBJPROP_COLOR, clrRed);
             ObjectSetInteger(0, arrow_name, OBJPROP_WIDTH, 2);
          }
@@ -236,9 +282,9 @@ void DrawZigzagPattern()
             ObjectCreate(0, num_name, OBJ_TEXT, 0, time2, price2);
          }
          ObjectSetString(0, num_name, OBJPROP_TEXT, (string)i);
-         ObjectSetInteger(0, num_name, OBJPROP_FONTSIZE, 10);
-         ObjectSetString(0, num_name, OBJPROP_FONT, "Arial");
-         ObjectSetInteger(0, num_name, OBJPROP_COLOR, clrBlack);
+         ObjectSetInteger(0, num_name, OBJPROP_FONTSIZE, 12);
+         ObjectSetString(0, num_name, OBJPROP_FONT, "Arial Bold");
+         ObjectSetInteger(0, num_name, OBJPROP_COLOR, clrYellow);
       }
    }
    
@@ -263,6 +309,8 @@ void AnalyzeSwingSignal()
    double swing_2 = (swing_highs[2] != 0) ? swing_highs[2] : swing_lows[2];
    double swing_3 = (swing_highs[3] != 0) ? swing_highs[3] : swing_lows[3];
    double swing_4 = (swing_highs[4] != 0) ? swing_highs[4] : swing_lows[4];
+   
+   Print("Swing 0: ", swing_0, " | Swing 2: ", swing_2, " | Swing 4: ", swing_4);
    
    // Validasi pola Zigzag
    bool is_uptrend = (swing_0 < swing_2 && swing_2 < swing_4);
@@ -313,7 +361,7 @@ void ShowBuySignal(double entry_price)
    {
       ObjectCreate(0, signal_name, OBJ_TEXT, 0, Time[0], entry_price - 50*Point);
    }
-   ObjectSetString(0, signal_name, OBJPROP_TEXT, "BUY - Swing 5 Complete!");
+   ObjectSetString(0, signal_name, OBJPROP_TEXT, "BUY - Swing 5!");
    ObjectSetInteger(0, signal_name, OBJPROP_FONTSIZE, 14);
    ObjectSetInteger(0, signal_name, OBJPROP_COLOR, clrGreen);
    ObjectSetString(0, signal_name, OBJPROP_FONT, "Arial Bold");
@@ -341,7 +389,7 @@ void ShowSellSignal(double entry_price)
    {
       ObjectCreate(0, signal_name, OBJ_TEXT, 0, Time[0], entry_price + 50*Point);
    }
-   ObjectSetString(0, signal_name, OBJPROP_TEXT, "SELL - Swing 5 Complete!");
+   ObjectSetString(0, signal_name, OBJPROP_TEXT, "SELL - Swing 5!");
    ObjectSetInteger(0, signal_name, OBJPROP_FONTSIZE, 14);
    ObjectSetInteger(0, signal_name, OBJPROP_COLOR, clrRed);
    ObjectSetString(0, signal_name, OBJPROP_FONT, "Arial Bold");
