@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
-//|                         Elliott Wave Signal EA v2.0              |
+//|                         Elliott Wave Signal EA v2.1 (FIXED)     |
 //|                               https://www.facebook.com/traderknj |
 //|                                      Copyright 2016, KNJ company |
 //|                                              TraderKNJ@yahoo.com |
 //+------------------------------------------------------------------+
 #property copyright "TraderKNJ@yahoo.com"
 #property link      "https://www.facebook.com/traderknj"
-#property version   "2.00"
+#property version   "2.10"
 #property strict
 #property description "Elliott Wave Pattern Signal EA - Auto Detection & Trading"
 
@@ -231,8 +231,8 @@ void DrawWaveLabels()
    
    for(int i = 0; i < wave_count && i < 5; i++)
    {
-      string label_name = "Wave_" + IntToString(i);
-      string label_text = IntToString(i);
+      string label_name = "Wave_" + (string)i;
+      string label_text = (string)i;
       
       if(ObjectFind(0, label_name) < 0)
       {
@@ -264,7 +264,7 @@ void ShowBuySignal(double entry_price)
    // Create buy signal object
    DeleteSignalObjects();
    
-   string signal_name = "BUY_SIGNAL_" + TimeToString(TimeCurrent());
+   string signal_name = "BUY_SIGNAL_" + (string)TimeCurrent();
    ObjectCreate(0, signal_name, OBJ_TEXT, 0, Time[0], Ask + 100*Point);
    ObjectSetString(0, signal_name, OBJPROP_TEXT, "BUY SIGNAL - Wave 5 Complete!");
    ObjectSetInteger(0, signal_name, OBJPROP_FONTSIZE, 12);
@@ -291,7 +291,7 @@ void ShowSellSignal(double entry_price)
    // Create sell signal object
    DeleteSignalObjects();
    
-   string signal_name = "SELL_SIGNAL_" + TimeToString(TimeCurrent());
+   string signal_name = "SELL_SIGNAL_" + (string)TimeCurrent();
    ObjectCreate(0, signal_name, OBJ_TEXT, 0, Time[0], Bid - 100*Point);
    ObjectSetString(0, signal_name, OBJPROP_TEXT, "SELL SIGNAL - Wave 5 Complete!");
    ObjectSetInteger(0, signal_name, OBJPROP_FONTSIZE, 12);
@@ -409,7 +409,7 @@ void DeleteWaveLabels()
 {
    for(int i = 0; i < 5; i++)
    {
-      string label_name = "Wave_" + IntToString(i);
+      string label_name = "Wave_" + (string)i;
       
       if(ObjectFind(0, label_name) >= 0)
       {
