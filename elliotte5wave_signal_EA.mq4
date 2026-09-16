@@ -1,52 +1,56 @@
 //+------------------------------------------------------------------+
-//|                         Elliott Wave Signal EA v2.1 (FIXED)     |
+//|                  Elliott Wave Zigzag Signal EA v3.0              |
+//|                    Zigzag Pattern with Arrow Signals             |
 //|                               https://www.facebook.com/traderknj |
 //|                                      Copyright 2016, KNJ company |
 //|                                              TraderKNJ@yahoo.com |
 //+------------------------------------------------------------------+
 #property copyright "TraderKNJ@yahoo.com"
 #property link      "https://www.facebook.com/traderknj"
-#property version   "2.10"
+#property version   "3.00"
 #property strict
-#property description "Elliott Wave Pattern Signal EA - Auto Detection & Trading"
+#property description "Elliott Wave Zigzag EA - Arrow Signals & Swing Detection"
 
 // ===== INPUT PARAMETERS =====
-input int RSI_Period = 14;                      // RSI Period untuk deteksi trend
-input double RSI_Overbought = 70;              // RSI Level Overbought
-input double RSI_Oversold = 30;                // RSI Level Oversold
-input int ATR_Period = 14;                     // ATR Period untuk volatility
-input double ATR_Multiplier = 1.5;             // ATR Multiplier untuk SL/TP
-input double Lot_Size = 0.1;                   // Ukuran Lot
+input int Zigzag_Depth = 12;                    // Zigzag Depth untuk deteksi swing
+input double Zigzag_Deviation = 5.0;            // Deviation % untuk swing
+input int Zigzag_Backstep = 3;                  // Backstep untuk zigzag
+input double Lot_Size = 0.1;                    // Ukuran Lot
 input bool Use_Money_Management = true;        // Gunakan Money Management
 input double Risk_Percent = 2.0;               // Risk % per trade
-input int Bars_Look_Back = 50;                 // Jumlah bars untuk analisis
-input bool Show_Wave_Label = true;             // Tampilkan label wave
+input bool Show_Zigzag_Line = true;            // Tampilkan garis zigzag
+input bool Show_Arrows = true;                 // Tampilkan arrow signals
 input bool Show_Signal_Alert = true;           // Tampilkan alert signal
-input bool Enable_Trading = false;             // Enable Auto Trading (HATI-HATI!)
+input bool Enable_Trading = false;             // Enable Auto Trading
 input bool Use_Sound_Alert = false;            // Gunakan sound alert
 input string Sound_File = "alert.wav";         // Nama file sound
+input int ATR_Period = 14;                     // ATR Period untuk SL/TP
+input double ATR_Multiplier = 1.5;             // ATR Multiplier
 
 // ===== GLOBAL VARIABLES =====
-int wave_count = 0;
-double wave_points[5];
-datetime wave_times[5];
-int signal_bar = 0;
+int swing_count = 0;
+double swing_highs[10];
+double swing_lows[10];
+int swing_bars[10];
+datetime swing_times[10];
+bool last_swing_up = true;  // true = naik, false = turun
 bool signal_generated = false;
-string signal_type = "";  // "BUY" atau "SELL"
+string signal_type = "";
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                  |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("===== Elliott Wave Signal EA Started =====");
-   Print("Timeframe: ", Period(), " Minutes");
+   Print("===== Elliott Wave Zigzag Signal EA v3.0 Started =====");
    Print("Symbol: ", Symbol());
-   Print("Risk: ", Risk_Percent, "% per trade");
+   Print("Timeframe: ", Period(), " Minutes");
+   Print("Zigzag Depth: ", Zigzag_Depth);
    
-   // Initialize wave points array
-   ArrayInitialize(wave_points, 0);
-   ArrayInitialize(wave_times, 0);
+   ArrayInitialize(swing_highs, 0);
+   ArrayInitialize(swing_lows, 0);
+   ArrayInitialize(swing_bars, 0);
+   ArrayInitialize(swing_times, 0);
    
    return(INIT_SUCCEEDED);
 }
@@ -56,8 +60,8 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   Print("===== Elliott Wave Signal EA Stopped =====");
-   DeleteAllObjects();
+   Print("===== Elliott Wave Zigzag Signal EA Stopped =====");
+   DeleteAllZigzagObjects();
 }
 
 //+------------------------------------------------------------------+
@@ -65,11 +69,11 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // Deteksi Elliott Wave Pattern
-   DetectElliottWave();
+   // Deteksi Zigzag Swing Pattern
+   DetectZigzagSwings();
    
-   // Analisis signal
-   AnalyzeSignal();
+   // Analisis signal pada swing ke-5
+   AnalyzeSwingSignal();
    
    // Jalankan trading jika enabled
    if(Enable_Trading && signal_generated)
@@ -79,175 +83,204 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| DETECT ELLIOTT WAVE PATTERN                                     |
+//| DETECT ZIGZAG SWINGS                                            |
 //+------------------------------------------------------------------+
-void DetectElliottWave()
+void DetectZigzagSwings()
 {
-   // Cari 5 swing highs dan lows untuk membentuk pattern Elliott Wave
-   int swing_count = 0;
-   int checked_bars = 0;
-   double current_high, current_low;
-   bool is_uptrend = true;
+   // Clear previous data
+   swing_count = 0;
+   ArrayInitialize(swing_highs, 0);
+   ArrayInitialize(swing_lows, 0);
+   ArrayInitialize(swing_bars, 0);
+   ArrayInitialize(swing_times, 0);
    
-   // Tentukan trend awal
-   if(Close[10] > Close[30]) 
-      is_uptrend = true;
-   else 
-      is_uptrend = false;
+   int bars_check = 500;  // Jumlah bars untuk di-scan
+   int last_high_bar = -1;
+   int last_low_bar = -1;
+   double last_high = 0;
+   double last_low = DBL_MAX;
+   bool looking_for_high = true;
    
-   // Identifikasi swing points
-   for(int i = 1; i < Bars_Look_Back && swing_count < 5; i++)
+   // Determine initial direction
+   if(Close[50] > Close[100])
+      looking_for_high = false;  // Cari low dulu
+   else
+      looking_for_high = true;   // Cari high dulu
+   
+   // Scan bars untuk menemukan swings
+   for(int i = Zigzag_Depth; i < bars_check; i++)
    {
-      // Cari high swing
-      if(is_uptrend)
+      // Cari swing LOW
+      if(!looking_for_high)
       {
-         if(High[i] > High[i-1] && High[i] > High[i+1])
+         // Cari low dengan left dan right bars
+         if(Low[i] < Low[i-Zigzag_Backstep] && Low[i] < Low[i+Zigzag_Backstep])
          {
-            wave_points[swing_count] = High[i];
-            wave_times[swing_count] = Time[i];
-            swing_count++;
-            is_uptrend = false;
+            // Validasi deviasi
+            if(last_high == 0 || (last_high - Low[i]) / last_high * 100 >= Zigzag_Deviation)
+            {
+               last_low = Low[i];
+               last_low_bar = i;
+               looking_for_high = true;  // Next: cari high
+               
+               // Simpan swing point
+               if(swing_count < 10)
+               {
+                  swing_lows[swing_count] = Low[i];
+                  swing_bars[swing_count] = i;
+                  swing_times[swing_count] = Time[i];
+                  swing_count++;
+                  last_swing_up = false;
+               }
+               
+               i += Zigzag_Backstep;
+            }
          }
       }
-      // Cari low swing
+      // Cari swing HIGH
       else
       {
-         if(Low[i] < Low[i-1] && Low[i] < Low[i+1])
+         // Cari high dengan left dan right bars
+         if(High[i] > High[i-Zigzag_Backstep] && High[i] > High[i+Zigzag_Backstep])
          {
-            wave_points[swing_count] = Low[i];
-            wave_times[swing_count] = Time[i];
-            swing_count++;
-            is_uptrend = true;
+            // Validasi deviasi
+            if(last_low == DBL_MAX || (High[i] - last_low) / last_low * 100 >= Zigzag_Deviation)
+            {
+               last_high = High[i];
+               last_high_bar = i;
+               looking_for_high = false;  // Next: cari low
+               
+               // Simpan swing point
+               if(swing_count < 10)
+               {
+                  swing_highs[swing_count] = High[i];
+                  swing_bars[swing_count] = i;
+                  swing_times[swing_count] = Time[i];
+                  swing_count++;
+                  last_swing_up = true;
+               }
+               
+               i += Zigzag_Backstep;
+            }
          }
       }
    }
    
-   wave_count = swing_count;
-   
-   // Draw wave labels
-   if(Show_Wave_Label)
+   // Draw zigzag lines dan arrows
+   if(Show_Zigzag_Line || Show_Arrows)
    {
-      DrawWaveLabels();
+      DrawZigzagPattern();
    }
 }
 
 //+------------------------------------------------------------------+
-//| ANALYZE SIGNAL - DETEKSI PADA WAVE KE-5                        |
+//| DRAW ZIGZAG PATTERN & ARROWS                                    |
 //+------------------------------------------------------------------+
-void AnalyzeSignal()
+void DrawZigzagPattern()
 {
-   // Signal hanya dibuat ketika mencapai wave ke-5
-   if(wave_count < 5)
+   DeleteAllZigzagObjects();
+   
+   // Draw garis dan arrows
+   for(int i = 0; i < swing_count - 1; i++)
    {
-      signal_generated = false;
-      return;
-   }
-   
-   // Deteksi tipe signal berdasarkan struktur wave
-   double wave_1 = wave_points[0];
-   double wave_2 = wave_points[1];
-   double wave_3 = wave_points[2];
-   double wave_4 = wave_points[3];
-   double wave_5 = wave_points[4];
-   
-   // Validasi Elliott Wave Rules
-   bool is_valid_wave = ValidateElliottWave(wave_1, wave_2, wave_3, wave_4, wave_5);
-   
-   if(!is_valid_wave)
-   {
-      signal_generated = false;
-      return;
-   }
-   
-   // Deteksi trend direction
-   if(wave_1 < wave_3 && wave_3 < wave_5)
-   {
-      // UPTREND - BUY SIGNAL pada completion wave 5
-      signal_type = "BUY";
-      signal_generated = true;
-      signal_bar = 0;
+      datetime time1 = swing_times[i];
+      datetime time2 = swing_times[i + 1];
+      double price1 = (swing_highs[i] != 0) ? swing_highs[i] : swing_lows[i];
+      double price2 = (swing_highs[i + 1] != 0) ? swing_highs[i + 1] : swing_lows[i + 1];
       
-      if(Show_Signal_Alert)
+      // Draw line
+      if(Show_Zigzag_Line)
       {
-         ShowBuySignal(wave_5);
+         string line_name = "ZigzagLine_" + (string)i;
+         ObjectCreate(0, line_name, OBJ_TREND, 0, time1, price1, time2, price2);
+         ObjectSetInteger(0, line_name, OBJPROP_COLOR, clrBlue);
+         ObjectSetInteger(0, line_name, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, line_name, OBJPROP_RAY, false);
+      }
+      
+      // Draw arrow
+      if(Show_Arrows)
+      {
+         string arrow_name = "Arrow_" + (string)i;
+         
+         if(price2 > price1)
+         {
+            // Swing naik - Arrow UP
+            ObjectCreate(0, arrow_name, OBJ_ARROW, 0, time2, price2);
+            ObjectSetInteger(0, arrow_name, OBJPROP_ARROWCODE, ARROW_UP);
+            ObjectSetInteger(0, arrow_name, OBJPROP_COLOR, clrGreen);
+            ObjectSetInteger(0, arrow_name, OBJPROP_WIDTH, 2);
+         }
+         else
+         {
+            // Swing turun - Arrow DOWN
+            ObjectCreate(0, arrow_name, OBJ_ARROW, 0, time2, price2);
+            ObjectSetInteger(0, arrow_name, OBJPROP_ARROWCODE, ARROW_DOWN);
+            ObjectSetInteger(0, arrow_name, OBJPROP_COLOR, clrRed);
+            ObjectSetInteger(0, arrow_name, OBJPROP_WIDTH, 2);
+         }
+         
+         // Tampilkan swing number
+         string num_name = "SwingNum_" + (string)i;
+         ObjectCreate(0, num_name, OBJ_TEXT, 0, time2, price2);
+         ObjectSetString(0, num_name, OBJPROP_TEXT, (string)i);
+         ObjectSetInteger(0, num_name, OBJPROP_FONTSIZE, 10);
+         ObjectSetString(0, num_name, OBJPROP_FONT, "Arial");
+         ObjectSetInteger(0, num_name, OBJPROP_COLOR, clrBlack);
       }
    }
-   else if(wave_1 > wave_3 && wave_3 > wave_5)
+   
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| ANALYZE SWING SIGNAL - SWING KE-5 SELESAI                      |
+//+------------------------------------------------------------------+
+void AnalyzeSwingSignal()
+{
+   // Signal hanya saat swing ke-5 terdeteksi
+   if(swing_count < 5)
    {
-      // DOWNTREND - SELL SIGNAL pada completion wave 5
-      signal_type = "SELL";
+      signal_generated = false;
+      return;
+   }
+   
+   // Ambil data swing 0 s/d 4 (5 swings)
+   double swing_0 = (swing_highs[0] != 0) ? swing_highs[0] : swing_lows[0];
+   double swing_1 = (swing_highs[1] != 0) ? swing_highs[1] : swing_lows[1];
+   double swing_2 = (swing_highs[2] != 0) ? swing_highs[2] : swing_lows[2];
+   double swing_3 = (swing_highs[3] != 0) ? swing_highs[3] : swing_lows[3];
+   double swing_4 = (swing_highs[4] != 0) ? swing_highs[4] : swing_lows[4];
+   
+   // Validasi pola Zigzag
+   bool is_uptrend = (swing_0 < swing_2 && swing_2 < swing_4);
+   bool is_downtrend = (swing_0 > swing_2 && swing_2 > swing_4);
+   
+   if(is_uptrend)
+   {
+      // UPTREND - BUY SIGNAL
+      signal_type = "BUY";
       signal_generated = true;
-      signal_bar = 0;
       
       if(Show_Signal_Alert)
       {
-         ShowSellSignal(wave_5);
+         ShowBuySignal(swing_4);
+      }
+   }
+   else if(is_downtrend)
+   {
+      // DOWNTREND - SELL SIGNAL
+      signal_type = "SELL";
+      signal_generated = true;
+      
+      if(Show_Signal_Alert)
+      {
+         ShowSellSignal(swing_4);
       }
    }
    else
    {
       signal_generated = false;
-   }
-}
-
-//+------------------------------------------------------------------+
-//| VALIDATE ELLIOTT WAVE RULES                                     |
-//+------------------------------------------------------------------+
-bool ValidateElliottWave(double w1, double w2, double w3, double w4, double w5)
-{
-   // Rule 1: Wave 3 tidak boleh paling pendek
-   // Rule 2: Wave 4 tidak boleh masuk territory wave 1
-   // Rule 3: Wave 2 tidak boleh melampaui wave 1
-   
-   bool uptrend = (w1 < w3 && w3 < w5);
-   bool downtrend = (w1 > w3 && w3 > w5);
-   
-   if(uptrend)
-   {
-      // Validasi uptrend
-      if(w2 < w1 && w4 < w3 && w4 > w2)
-      {
-         return true;
-      }
-   }
-   else if(downtrend)
-   {
-      // Validasi downtrend
-      if(w2 > w1 && w4 > w3 && w4 < w2)
-      {
-         return true;
-      }
-   }
-   
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| DRAW WAVE LABELS                                                |
-//+------------------------------------------------------------------+
-void DrawWaveLabels()
-{
-   DeleteWaveLabels();
-   
-   for(int i = 0; i < wave_count && i < 5; i++)
-   {
-      string label_name = "Wave_" + (string)i;
-      string label_text = (string)i;
-      
-      if(ObjectFind(0, label_name) < 0)
-      {
-         ObjectCreate(0, label_name, OBJ_TEXT, 0, wave_times[i], wave_points[i]);
-      }
-      
-      ObjectSetString(0, label_name, OBJPROP_TEXT, label_text);
-      ObjectSetInteger(0, label_name, OBJPROP_FONTSIZE, 16);
-      ObjectSetString(0, label_name, OBJPROP_FONT, "Arial Bold");
-      
-      // Ubah warna berdasarkan wave number
-      if(i % 2 == 0)
-         ObjectSetInteger(0, label_name, OBJPROP_COLOR, clrBlue);
-      else
-         ObjectSetInteger(0, label_name, OBJPROP_COLOR, clrRed);
    }
 }
 
@@ -260,22 +293,20 @@ void ShowBuySignal(double entry_price)
    Print("Time: ", TimeToString(TimeCurrent()));
    Print("Symbol: ", Symbol());
    Print("Entry Price: ", entry_price);
+   Print("Swing Count: ", swing_count);
    
-   // Create buy signal object
-   DeleteSignalObjects();
-   
+   // Create buy signal marker
    string signal_name = "BUY_SIGNAL_" + (string)TimeCurrent();
-   ObjectCreate(0, signal_name, OBJ_TEXT, 0, Time[0], Ask + 100*Point);
-   ObjectSetString(0, signal_name, OBJPROP_TEXT, "BUY SIGNAL - Wave 5 Complete!");
-   ObjectSetInteger(0, signal_name, OBJPROP_FONTSIZE, 12);
+   ObjectCreate(0, signal_name, OBJ_TEXT, 0, Time[0], entry_price - 50*Point);
+   ObjectSetString(0, signal_name, OBJPROP_TEXT, "BUY - Swing 5 Complete!");
+   ObjectSetInteger(0, signal_name, OBJPROP_FONTSIZE, 14);
    ObjectSetInteger(0, signal_name, OBJPROP_COLOR, clrGreen);
    ObjectSetString(0, signal_name, OBJPROP_FONT, "Arial Bold");
    
-   // Notification
    if(Use_Sound_Alert)
       PlaySound(Sound_File);
       
-   Alert("BUY SIGNAL DETECTED! - ", Symbol(), " at ", TimeToString(TimeCurrent()));
+   Alert("BUY SIGNAL! Swing 5 Complete - ", Symbol());
 }
 
 //+------------------------------------------------------------------+
@@ -287,22 +318,20 @@ void ShowSellSignal(double entry_price)
    Print("Time: ", TimeToString(TimeCurrent()));
    Print("Symbol: ", Symbol());
    Print("Entry Price: ", entry_price);
+   Print("Swing Count: ", swing_count);
    
-   // Create sell signal object
-   DeleteSignalObjects();
-   
+   // Create sell signal marker
    string signal_name = "SELL_SIGNAL_" + (string)TimeCurrent();
-   ObjectCreate(0, signal_name, OBJ_TEXT, 0, Time[0], Bid - 100*Point);
-   ObjectSetString(0, signal_name, OBJPROP_TEXT, "SELL SIGNAL - Wave 5 Complete!");
-   ObjectSetInteger(0, signal_name, OBJPROP_FONTSIZE, 12);
+   ObjectCreate(0, signal_name, OBJ_TEXT, 0, Time[0], entry_price + 50*Point);
+   ObjectSetString(0, signal_name, OBJPROP_TEXT, "SELL - Swing 5 Complete!");
+   ObjectSetInteger(0, signal_name, OBJPROP_FONTSIZE, 14);
    ObjectSetInteger(0, signal_name, OBJPROP_COLOR, clrRed);
    ObjectSetString(0, signal_name, OBJPROP_FONT, "Arial Bold");
    
-   // Notification
    if(Use_Sound_Alert)
       PlaySound(Sound_File);
       
-   Alert("SELL SIGNAL DETECTED! - ", Symbol(), " at ", TimeToString(TimeCurrent()));
+   Alert("SELL SIGNAL! Swing 5 Complete - ", Symbol());
 }
 
 //+------------------------------------------------------------------+
@@ -310,14 +339,14 @@ void ShowSellSignal(double entry_price)
 //+------------------------------------------------------------------+
 void ExecuteTrade()
 {
-   // Hanya buka 1 trade per signal
+   // Hanya 1 trade per signal
    if(CountOpenTrades() > 0)
       return;
    
    double lot = Lot_Size;
    double atr = iATR(Symbol(), Period(), ATR_Period, 0);
    double stop_loss = atr * ATR_Multiplier;
-   double take_profit = stop_loss * 2;  // Risk Reward Ratio 1:2
+   double take_profit = stop_loss * 2;
    
    if(Use_Money_Management)
    {
@@ -330,17 +359,13 @@ void ExecuteTrade()
       double buy_sl = buy_entry - stop_loss;
       double buy_tp = buy_entry + take_profit;
       
-      int ticket = OrderSend(Symbol(), OP_BUY, lot, buy_entry, 3, buy_sl, buy_tp, 
-                             "Elliott Wave BUY", 0, 0, clrGreen);
+      int ticket = OrderSend(Symbol(), OP_BUY, lot, buy_entry, 3, buy_sl, buy_tp,
+                             "Zigzag BUY", 0, 0, clrGreen);
       
       if(ticket > 0)
-      {
-         Print("BUY Order Opened: Ticket #", ticket);
-      }
+         Print("BUY Order: Ticket #", ticket);
       else
-      {
          Print("Buy Order Failed! Error: ", GetLastError());
-      }
    }
    else if(signal_type == "SELL")
    {
@@ -348,24 +373,20 @@ void ExecuteTrade()
       double sell_sl = sell_entry + stop_loss;
       double sell_tp = sell_entry - take_profit;
       
-      int ticket = OrderSend(Symbol(), OP_SELL, lot, sell_entry, 3, sell_sl, sell_tp, 
-                             "Elliott Wave SELL", 0, 0, clrRed);
+      int ticket = OrderSend(Symbol(), OP_SELL, lot, sell_entry, 3, sell_sl, sell_tp,
+                             "Zigzag SELL", 0, 0, clrRed);
       
       if(ticket > 0)
-      {
-         Print("SELL Order Opened: Ticket #", ticket);
-      }
+         Print("SELL Order: Ticket #", ticket);
       else
-      {
          Print("Sell Order Failed! Error: ", GetLastError());
-      }
    }
    
    signal_generated = false;
 }
 
 //+------------------------------------------------------------------+
-//| CALCULATE LOT SIZE BASED ON RISK                               |
+//| CALCULATE LOT SIZE                                              |
 //+------------------------------------------------------------------+
 double CalculateLotSize(double stop_loss_pips)
 {
@@ -374,7 +395,6 @@ double CalculateLotSize(double stop_loss_pips)
    double pip_value = (Symbol() == "EURUSD" || Symbol() == "GBPUSD") ? 0.0001 : 0.01;
    double lot = (risk_amount / (stop_loss_pips / pip_value)) / 100000;
    
-   // Ensure minimum lot
    if(lot < 0.01)
       lot = 0.01;
    
@@ -403,47 +423,18 @@ int CountOpenTrades()
 }
 
 //+------------------------------------------------------------------+
-//| DELETE WAVE LABELS                                              |
+//| DELETE ALL ZIGZAG OBJECTS                                       |
 //+------------------------------------------------------------------+
-void DeleteWaveLabels()
-{
-   for(int i = 0; i < 5; i++)
-   {
-      string label_name = "Wave_" + (string)i;
-      
-      if(ObjectFind(0, label_name) >= 0)
-      {
-         ObjectDelete(0, label_name);
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| DELETE SIGNAL OBJECTS                                           |
-//+------------------------------------------------------------------+
-void DeleteSignalObjects()
+void DeleteAllZigzagObjects()
 {
    for(int i = ObjectsTotal() - 1; i >= 0; i--)
    {
       string obj_name = ObjectName(i);
       
-      if(StringFind(obj_name, "BUY_SIGNAL_") == 0 || StringFind(obj_name, "SELL_SIGNAL_") == 0)
-      {
-         ObjectDelete(0, obj_name);
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| DELETE ALL OBJECTS                                              |
-//+------------------------------------------------------------------+
-void DeleteAllObjects()
-{
-   for(int i = ObjectsTotal() - 1; i >= 0; i--)
-   {
-      string obj_name = ObjectName(i);
-      
-      if(StringFind(obj_name, "Wave_") == 0 || StringFind(obj_name, "BUY_SIGNAL_") == 0 || 
+      if(StringFind(obj_name, "ZigzagLine_") == 0 || 
+         StringFind(obj_name, "Arrow_") == 0 ||
+         StringFind(obj_name, "SwingNum_") == 0 ||
+         StringFind(obj_name, "BUY_SIGNAL_") == 0 ||
          StringFind(obj_name, "SELL_SIGNAL_") == 0)
       {
          ObjectDelete(0, obj_name);
